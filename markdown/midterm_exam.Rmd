@@ -1,0 +1,340 @@
+---
+title: "midterm_exam"
+author: "j4yr0u93"
+date: "11/7/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+#lib load
+library(tidyverse)
+library(lubridate)
+library(ggmap)
+library(gganimate)
+library(ggfortify)
+library(broom)
+library(profileModel)
+library(brms)
+library(AICcmodavg)
+#read covid from source
+covid_19 <- read_csv('https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_US.csv')
+#read bird from local
+morph_bird <- read_csv('../data/Morphology data.csv')
+```
+
+# 1
+
+I would probably measure sulfates, reduced sulfur, and other sulfur substrates in hot spring environments at varying depths to try and inductively detect for thermophilic/acidophilic bacteria and archaea. Using predictive models of these organisms metabolism or *prior* data I would try to infer the relationship between metabolic rates/activity and biomass or population size to determine upper and lower limits of enzymatic activity. Then when I have measurements of different sulfurous molecules at varying depths I could try to predict population density across strata within a spring, accounting for abiotic geochemical factors which affect cycling and substrate concentrations. I guess in my design a sample would be multifactor, measurements within a spring at a particular depth are a sample set, and different springs in the area would also act as a level of sampling. I think to account for the possibility of abiotic factor being a heavy influence of sulfurourous substrate present, a spring with conditions too extreme and no life detected would be an abiotic control. I would assume that the population density would be either a narrow bell curve or series of curves if there are multiple metabolic strata present working on different substrates. Another sampling direction to consider might be distance from the physical walls of the spring in relationship to depth. Maybe the organism likes the aquatic center of a spring or prefers to avoid it.\
+
+# 2b
+```{r 2b, echo=FALSE, cache=TRUE}
+state_extraction <- function(state, data=covid_19){
+  #error catching for the meme and filter
+  if(state %in% covid_19$Province_State){
+    covid_19_state <- covid_19 %>% filter(Province_State == state) %>% distinct()
+    covid_19_state <- covid_19_state %>% pivot_longer(cols = ends_with('/20'),
+                                                    names_to = 'date',
+                                                    values_to = 'cases') %>%
+                                       mutate(date = mdy(date))
+    return(covid_19_state)
+  } else{
+    print('Try entering a proper state name')
+  }
+}
+
+head(state_extraction('California'))
+```
+
+# 2c
+```{r 2c, echo=FALSE, cache=TRUE}
+#read comments in next block
+mass_cases <- state_extraction('Massachusetts')
+
+mass_cases_sorted <- mass_cases %>% group_by(Admin2) %>% mutate(max_cases = max(cases))
+
+mass_unordered <- mass_cases_sorted %>% select(Admin2, max_cases) %>% distinct()
+
+mass_ordering <- mass_unordered[order(mass_unordered$max_cases),] %>% mutate(cup = 0)
+
+per_cup <- floor(length(mass_ordering$Admin2)/4)
+offset <- length(mass_ordering$Admin2) %% 4
+inset <- 0
+
+for(i in 1:length(mass_ordering$cup)){
+  if (offset > 0 && ((i - 1) %% per_cup) == 0 && i != 1){
+    mass_ordering$cup[i] <- ceiling(i/(per_cup+1))
+    offset <- offset - 1
+    inset <- inset - 1
+  }
+  else{
+    mass_ordering$cup[i] <- ceiling((i+inset)/(per_cup))
+  }
+}
+
+mass_ordering <- mass_ordering %>% full_join(mass_cases_sorted) %>% mutate(Region = as.factor(Admin2))
+
+mass_ordering$Region <- fct_reorder(mass_ordering$Region, mass_ordering$max_cases)
+
+ggplot(mass_ordering, mapping = aes(x = date, y = cases, color = Region)) +
+  geom_point() +
+  scale_color_viridis_d() +
+  facet_wrap(~cup) +
+  theme_minimal()
+```
+
+# 2d
+```{r 2d, echo=FALSE, cache=TRUE}
+covid_plot_basic <- function(state, data=covid_19, cups = 4){
+  #extract vals for state and groupby subzone
+  state_sorted <- state_extraction(state, data) %>% group_by(Admin2) %>% mutate(max_cases = max(cases))
+  #just get subzone names and peak cases
+  state_unordered <- state_sorted %>% select(Admin2, max_cases) %>% distinct()
+  #order df by peak cases
+  state_ordered <- state_unordered[order(state_unordered$max_cases),] %>% mutate(cup = 0)
+  
+  #set number of subzones per cup
+  per_cup <- floor(length(state_ordered$Admin2)/cups)
+  #find out cup overflor
+  offset <- length(state_ordered$Admin2) %% cups
+  #set default inset for cup overflow adjustment
+  inset <- 0
+  
+  #magic loop of setting the cup
+  for(i in 1:length(state_ordered$cup)){
+    if (offset > 0 && ((i - 1) %% per_cup) == 0 && i != 1){
+      state_ordered$cup[i] <- ceiling(i/(per_cup+1))
+      offset <- offset - 1
+      inset <- inset - 1
+    }
+    else{
+      state_ordered$cup[i] <- ceiling((i+inset)/(per_cup))
+    }
+  }
+  
+  #mutate to get factor for reordering
+  state_ordered <- state_ordered %>% full_join(state_sorted) %>% mutate(Region = as.factor(Admin2))
+  #reorder factor based on max_cases
+  state_ordered$Region <- fct_reorder(state_ordered$Region, state_ordered$max_cases)
+  #delicious plot with simple code
+  state_ordered %>% ggplot(mapping = aes(x = date, y = cases, color = Region)) +
+    geom_point() +
+    scale_color_viridis_d() +
+    facet_wrap(~cup) +
+    theme_minimal()
+}
+
+covid_plot_basic('Vermont', cups = 6)
+```
+
+# 2ec
+```{r ec1, echo=FALSE, cache=TRUE}
+covid_compare <- function(states, data=covid_19, regions=5){
+  state_comparisons <- state_extraction('Massachusetts')[0,]
+  for(i in states){
+    #extract vals for state and groupby subzone
+    state_sorted <- state_extraction(i, data) %>% group_by(Admin2) %>% mutate(max_cases = max(cases))
+    #just get subzone names and peak cases
+    state_unordered <- state_sorted %>% select(Admin2, max_cases) %>% distinct()
+    #order df by peak cases, take top regions, reorder fctr
+    state_ordered <- state_unordered[order(state_unordered$max_cases),]
+    state_top5_ordered <- state_ordered[1:regions,]
+    state_top5_ordered <- state_top5_ordered %>% inner_join(state_sorted) %>% mutate(Region = as.factor(Admin2))
+    state_comparisons <- state_comparisons %>% full_join(state_top5_ordered)
+    state_comparisons$Region <- fct_reorder(state_comparisons$Region, state_comparisons$max_cases)
+
+  }
+  #nice plot
+  state_comparisons %>% ggplot(mapping = aes(x = date, y = cases, color = Region)) +
+    geom_point() +
+    scale_color_viridis_d() +
+    facet_wrap(~Province_State) +
+    theme_minimal()
+}
+
+covid_compare(c('Wyoming', 'Ohio', 'North Dakota'))
+```
+
+# 3
+
+I think the most appropriate framework for me to subscribe to is Lakatos, likelihood, and bayesian thinking. I would like to think my mind is open to many possibilities based on a concrete understanding of my environment. I don't entirely understand the applied math of bayesian thinking at times(linguistic parkour about statistical models); however, I do understand the framework of "partial belief states" and a hardcore set of beliefs which *generally* are unbending(the exception to this is when considering **Radical Probabilism**, [Bradley](https://www.jstor.org/stable/10.1086/432427)). The beliefs we present and likelihoods that we interpret are based upon what we readily believe in, and that which we believe we have the most evidence of. Bayesian conditioning supposes an inference based model built upon a set of observations in which we are certain about what we observed ([Bradley](https://www.jstor.org/stable/10.1086/432427)). Personally I know there are situations where what I observe, even quantitatively seems uncertain to me, casting disbelief within my observations. Maybe *Radical Probabilism* would be more apt for me, but as a lazy scientist having that additional nagging consideration in the back of my head is just extra work. As a good scientist I should only infer certain observation that is uncontested, which really should always be the case with a Lakatos model with a strong core. \
+ \
+The issue with relying on such a tactic of staying only in a *core theory* space is the inability to make large jumps, or conduct fantastically wild experiments. Yes the work will almost always be progressive, but it will be normally so. Mendel, Linnaeus, and Sageret believed in some kind of material of inheritance without ever having a certainty about it. They could only ever observe the direct product of their experiments, and never the inner machinations yet their work was progressive. That same sort of empiricism is the exact same reasoning that allowed for deductive reasoning of *atomos*; however, the philosophy of Leucippus and Democritus which gets attribution of being the first study of the atom, is far from a Lakatos research programme(to be fair it was still amazing for presocratic thought, [Graham](https://iep.utm.edu/presocra/)). If I go the route of explanatory emiricism only ever believing what I tangibly observe without any sort of deductive reasoning then I might end up appearing like a sophist, the bad critical kind like Mach(this is a bit hyperbole, [Dawes](https://plato.stanford.edu/entries/empiricism-ancient-medieval/)), saying things like "Habn S’eins gsehn? (Have you seen one?)", denying the existence of something since it cannot be seen. Imagine if I were a microbiologist and a colleague brough forth a study showing undeniable metabolic activity from what could be a haloarchaea, their work entirely built upon hard theory and inductive research. Without any direct evidence that it is in fact a haloarchaea they assume it is, stating not supposing, to make a deductive model of it. I then say, "Have you seen one?", discounting their work because of my disbelief since they are unable to produce the organism of their study. That would be ridiculous. \
+ \
+The more I think about it, the more I am influenced by Radical probabilism, and the more flexibility I want when interpreting a model. I'm pushed to have more priors to test, more auxillary hypothesis to hold, more interpretation of my posteriors and assumptions to really make sure I understand what I am trying to analyze. At times it makes me want to put down the analytical tools and return to basics to look closely at the correlation or data I might be studying to understand it's biology thoroughly and what I believe to be possible, and what I suppose to know impossible(as cool as SyFy shows are or the idea of mutants may be, it is probably best to not consider something incredulously improbable like whales tracing leylines to keep the Kraken sealed, you should watch "The Magicians" sometime). \
+ \
+T-tests and frequentist methods you learn about in introductory classes were confusing for me always, not just mathematically because of my disinterest in them, but because the idea of p-values and a null hypothesis seemed limited and boring. To outright say two objects existing in the same universe have no relationship to a believer of chaos theory, the butterfly effect, physical determinism, relativity, and constructs like Laplace's demon, well that is ignorant in my mind. Yes it is important to keep a cap on it all and try to stay in some pseudo reality regardless of your research programme. I guess what I am saying is a healthy skepticism of research programmes, and an understanding that everything being a result of what we describe as probability is a good way to go. It is only probability because we can't observe from outside the system like Laplace's demon; therefore our understanding is limited to a scope of what we *believe* to be a probable result. Even in a Lakatos research programme the full truth is not entirely present in the hardcore theory. \
+
+# 4
+```{r the_button, echo=TRUE}
+`p(Sun Explodes)` <- 0.0001
+`p(Truth)` <- (5/6)**2
+`p(Truth)`
+
+`p(Yes | Explodes)` <- `p(Sun Explodes)` * `p(Truth)`
+`p(Yes | Explodes)`
+
+`p(Yes | Doesn’t Explode)` <- (1-`p(Sun Explodes)`) * (1-`p(Truth)`)
+`p(Yes | Doesn’t Explode)`
+
+`p(No | Explodes)` <- `p(Sun Explodes)` * (1-`p(Truth)`)
+`p(No | Explodes)`
+
+`p(No | Doesn’t Explode)` <- (1-`p(Sun Explodes)`) * `p(Truth)`
+`p(No | Doesn’t Explode)`
+
+`p(Any Outcome)` <- `p(Yes | Explodes)` + `p(Yes | Doesn’t Explode)` + `p(No | Explodes)`+ `p(No | Doesn’t Explode)`
+`p(Any Outcome)`
+```
+
+# 4ec
+```{r button_ec, echo=TRUE, cache=TRUE}
+#press the button 10000 times
+many_button_presses <- function(){
+  results <- data.frame(Explodes = FALSE, Lies = FALSE)
+  
+  for(i in 1:10000){
+    if(sample(1:36, 1) == 1){lie <- TRUE}else{lie <- FALSE}
+    if(sample(1:10000, 1) == 1){explosion <- TRUE}else{explosion <- FALSE}
+    results <- results %>% add_row(Explodes = explosion, Lies = lie)
+  }
+  return(results)
+}
+
+results <- many_button_presses()
+
+results %>% filter(Explodes == TRUE, Lies == FALSE) %>% nrow()
+
+results %>% filter(Explodes == FALSE, Lies == TRUE) %>% nrow()
+```
+\
+Need I say more? \
+
+# 5a
+```{r birds_ls, echo=FALSE}
+print('least squares')
+#lsm
+ls_model <- lm(`Culmen (mm)` ~ `Tarsus (mm)`, data = morph_bird)
+
+#assumption check
+par(mfrow = c(2,2))
+plot(ls_model, which = c(1, 2, 4, 5))
+print('qq generally on line/linears, no abnormal resids, no outstanding cook ds. assumptions look good for ls model.')
+```
+
+```{r birds_lik, echo=FALSE}
+print('likelihood')
+#glm for lik
+glm_model <- glm(`Culmen (mm)` ~ `Tarsus (mm)`, data = morph_bird, family = gaussian(link = "identity"))
+
+#checking assumptions
+par(mfrow = c(1, 3))
+plot(glm_model, which = c(1, 2))
+hist(residuals(glm_model))
+print('qq generally on line/linears, no abnormal resids, histogram looks normal. assumptions look good for likelihood model.')
+
+```
+
+```{r birds_bays_hidden, include=FALSE, cache=TRUE}
+print('bays')
+#brm
+clean_morph_bird <- janitor::clean_names(morph_bird) %>% select(culmen_mm, tarsus_mm) %>% na.omit()
+brm_model <- brm(culmen_mm ~ tarsus_mm, data = clean_morph_bird, family = gaussian())
+
+```
+```{r birds_bays, echo=FALSE}
+#brm assumption check
+plot(brm_model)
+print('chains converge for intercept, dependent variable, and sigma value. assumptions look good for bays model.')
+```
+
+# 5b
+```{r confint, echo=FALSE}
+confint(ls_model)
+confint(glm_model)
+fixef(brm_model)
+```
+lik and ls models have very similar scores, bays model differs with an estimate around 0.37 which seems to be the most accurate since chain assumptions are better than ls and lik assumptions.
+
+# 5c
+```{r grid_fun, echo=FALSE}
+#summmary(glm) for inputs
+#making likelihood function based on class code
+lik <- function(slope, intercept){
+  #lik input
+  mod <- intercept + slope * clean_morph_bird$tarsus_mm
+  
+  #lik with log true
+  sum(dnorm(clean_morph_bird$culmen_mm, mod, log=TRUE))
+}
+
+#grid sampling based on in class code
+grid_sample <- tibble(intercept = -0.098707,
+                 slope = seq(0.35, 0.39, length.out=100)) %>%
+  group_by(slope, intercept) %>%
+  mutate(log_likelihood = lik(slope, intercept)) %>% 
+  ungroup()
+
+morph_ci <- glm_model %>% predict(interval = "confidence") %>% as.tibble()
+
+grid_sample %>% ggplot(aes(x = slope, y = log_likelihood)) +
+  geom_point() +
+geom_line(data=grid_sample %>% filter(log_likelihood >= (max(log_likelihood) - qchisq(0.95, df = 1)/2)) %>% as.data.frame(),
+          mapping = aes(x=slope, y=log_likelihood), color = 'red', size = 2) +
+geom_line(data=grid_sample %>% filter(log_likelihood >= (max(log_likelihood) - qchisq(0.80, df = 1)/2)),
+          mapping=aes(x=slope, y=log_likelihood), color = 'blue', size=2)
+
+profileModel(glm_model,
+             objective = "ordinaryDeviance",
+             quantile = qchisq(0.95, 1))
+```
+
+# 5d
+```{r prior_reality, include=FALSE, cache=TRUE}
+# check priors of model
+prior_summary(brm_model)
+# model with set priors close to original
+prior_brm <- brm(culmen_mm ~ tarsus_mm,
+                     data = clean_morph_bird,
+                     family = gaussian(link = "identity"),
+                     prior = c(prior(coef = "tarsus_mm", 
+                                     prior = normal(0.7, 0.01))),
+                     chains = 2)
+# check prior brm
+prior_summary(prior_brm)
+
+# fixef to check brm and see slight slope change does not affect model heavily
+fixef(prior_brm)
+fixef(brm_model)
+
+sample_fun <- function(n){
+  morph_sample <- sample_n(clean_morph_bird, size = n, replace = FALSE)
+}
+
+# Run brm with map and samp_fun to create new bayes models, each with the specified number of samples (10,100,300, and 500)
+bayes_samp_mods <- map(.x = c(10,100,300,500),
+              ~brm(culmen_mm ~ tarsus_mm,
+                   data = sample_fun(n = .x),
+                   family = gaussian(link = "identity"),
+                   chains = 2))
+
+```
+```{r 5d_results, echo=FALSE}
+bayes_samp_mods
+```
+Changing prior slope seemed to have little to no effect on the model at low sample size, sample size affected error but did not affect the estimates for slope or intercept of the model much. The higher the sample size the more overwhelmed the model seemed compared to the original.
+
+```{r expressions, echo=FALSE}
+#same response mods
+l_mod <- glm(culmen_mm ~ tarsus_mm, data = clean_morph_bird)
+sq_mod <- glm(culmen_mm ~ poly(tarsus_mm, 2), data = clean_morph_bird)
+cu_mod <- glm(culmen_mm ~ poly(tarsus_mm, 3), data = clean_morph_bird)
+#diff response mod mutate before mod for AIC
+ex_clean_morph_bird <- clean_morph_bird %>% mutate(culmen_mm = log(culmen_mm))
+ex_mod <- glm(culmen_mm ~ tarsus_mm, data = ex_clean_morph_bird)
+
+aictab(list(l_mod, sq_mod, cu_mod, ex_mod),
+       c('Linear', 'Square', 'Cubic', 'Exponential'))
+```
+\
+
+AIC indicates more or less the most *parsimonious* model relative to other models. Basically with the option of models presented amongst the four, exponential is the best model to be using in this case. The small difference in AIC vals between square and cubic models makes me believe that such a drastic transformation sticking out as the answer is a good direction to start exploring more in.
